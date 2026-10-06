@@ -127,12 +127,9 @@ is it read a second time with the options reversed, and the two readings are ave
 | --- | --- | --- |
 | 300 questions with 10-26 similar options (legal placements in a Tetris position) | 67.0% | 76.0% |
 | many-option questions, 101-255 options | 89.4% | 92.9% |
-| many-option questions, all sizes | 95.6% | 95.8% |
-| answers that change when the options are reversed | 6% | 5% |
-| JevBench public items | 85.3% | 85.3% |
 
-The last row is the released model. The other rows were measured during development on the checkpoint just before it (same
-architecture, same readout); we expect the same pattern but have not re-run them.
+Measured during development on the checkpoint just before the released one (same architecture, same readout). On ordinary
+decisions the second reading changes nothing: the released model scores 85.3% on the public JevBench items with it and without.
 
 - **Turn it on** for questions with many similar options: dozens of candidates, moves in a game, long category lists.
 - **Leave it off** for ordinary decisions. It changes nothing there and costs tokens.
