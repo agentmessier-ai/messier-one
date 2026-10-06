@@ -1,11 +1,64 @@
-# Messier One front end
+# Messier One
 
-A TypeSafe-compatible `/v1/systemone` endpoint for Messier One. The model answers `choice`, `score` and `noul` questions with
-probabilities read from one forward pass; no answer text is generated.
+A small open-weights **decision model**. Give it a state (any text or JSON) and typed questions; it returns a probability for
+every option from one forward pass. It does not generate text.
+
+- Weights: [agentmessier/messier-one](https://huggingface.co/agentmessier/messier-one) on Hugging Face (Qwen3.5-4B fine-tune, about 10 GB)
+- This repository: the serving code, a TypeSafe-compatible `POST /v1/systemone` endpoint
+- Benchmark request: [JevBench #194](https://github.com/fstandhartinger/jevbench/issues/194)
+
+```json
+{"state": {"ticket": "Order 8841: left earbud is dead, I want my money back. Order total 699."},
+ "questions": {"route": {"type": "choice", "instructions": "What should happen with this ticket?",
+                         "criteria": {"refund": "refund the order", "escalate": "send to a human agent", "ignore": null}}}}
+```
+
+```json
+{"answers": {"route": {"type": "choice", "choice": "refund", "confidence": 0.27,
+                       "probabilities": {"refund": 0.51, "escalate": 0.46, "ignore": 0.03}}}}
+```
+
+Your code acts when the model is sure and hands the rest to a person: here it is torn between a refund and a human agent, and
+says so.
+
+## What it is good at
+
+- **One forward pass, no generated text.** Every answer is a probability for each option, read at one position. On one
+  RTX 5090 a decision takes about 50 ms (short documents) to 95 ms (long ones), server on loopback.
+- **Up to 255 options in one question.** Routing to one of many tools, picking a category from a long list, choosing a move
+  among many. On our own many-option test it is right 97.6% of the time with 2-26 options, 91.1% with 27-100 and 89.4% with
+  101-255.
+- **It reads the goal you give it.** The same document judged under a different goal gets a different answer. On our own
+  held-out test (166 project descriptions, the same yes/no question under the original goal, the opposite goal and a goal
+  never seen in training) it agrees with the reference answers 86-90% of the time under all three.
+- **Probabilities you can use as they are.** They come from the model's own distribution with one fitted temperature per
+  question type. Nothing is pushed toward 0 or 1 afterwards.
+- **A drop-in endpoint.** The TypeSafe wire format: `choice`, `score` and `noul` questions, several per request.
+- **Small.** One 24 GB GPU is enough.
+
+The numbers above are our own measurements on our own test sets, whose reference answers were produced by larger language
+models, not by people.
+
+## Results
+
+Public JevBench items (231), measured by us with JevBench's own runner and its unchanged `typesafe` adapter: serial requests,
+single read, this server on one RTX 5090 (vLLM 0.30.0, BF16), loopback.
+
+| tier | correct | accuracy | ECE | latency p50 / p95 |
+| --- | --- | --- | --- | --- |
+| easy | 48 / 48 | 100.0% | 0.003 | 46 ms / 52 ms |
+| standard + judge (`original`) | 72 / 72 | 100.0% | 0.059 | 51 ms / 57 ms |
+| hard | 77 / 111 | 69.4% | 0.092 | 95 ms / 171 ms |
+| all | 197 / 231 | 85.3% | | |
+
+These are our own measurements on the public items, not leaderboard results. Part of the training material was written for
+this model in the families of JevBench's hard tier; no JevBench item, public or held out, was used for training, and every
+training question was scanned against the public items before use.
 
 ## Run
 
 ```bash
+git clone https://github.com/agentmessier-ai/messier-one && cd messier-one
 pip install -r requirements.txt   # vllm 0.30.0, transformers 5.18.0: the versions this was tested with
 hf download agentmessier/messier-one --revision v0.1 --local-dir MODEL_DIR
 
@@ -18,7 +71,7 @@ python server.py --model-dir MODEL_DIR --vllm http://127.0.0.1:8000 --served m -
 ```
 
 Wait until `GET http://127.0.0.1:8000/health` and `GET http://127.0.0.1:8080/health` return 200. After the download nothing
-needs network access. One GPU with 24 GB is enough (weights about 10 GB, BF16).
+needs network access.
 
 ## Request
 
@@ -33,14 +86,44 @@ curl -s http://127.0.0.1:8080/v1/systemone -H 'Content-Type: application/json' -
   }}'
 ```
 
-- `choice`: up to 255 options; `criteria` maps option name to a description (or `null`: the name is then the description).
-- `score`: `criteria` is the ordered list of levels; the answer is the expected level.
-- `noul`: the answer is P(true).
-- `confidence` follows the TypeSafe definitions (choice: `(p_max - 1/n) / (1 - 1/n)`); `probabilities` are always returned.
-- `--gate G` (off by default): a question whose top probability is below `G` is read again with the options reversed and
-  the two readings are averaged. It costs about a third more tokens on typical traffic.
-  Turn it on for questions with many similar options (dozens or more, e.g. moves in a game); on ordinary decisions it changes
-  nothing measurable.
+What the released model answers:
+
+```json
+{"answers": {
+  "route":  {"type": "choice", "choice": "refund", "confidence": 0.27,
+             "probabilities": {"refund": 0.51, "escalate": 0.46, "ignore": 0.03}},
+  "urgent": {"type": "noul", "noul": 0.11},
+  "anger":  {"type": "score", "score": 0.59, "confidence": 0.41,
+             "probabilities": {"0": 0.55, "1": 0.31, "2": 0.14}}}}
+```
+
+## The three question types
+
+| type | you send | you get |
+| --- | --- | --- |
+| `choice` | `criteria`: option name -> description (or `null`: the name is then the description), or a list of names. 2 to 255 options | the likeliest option, a probability for each, `confidence` |
+| `score` | `criteria`: the ordered list of levels, lowest first | the expected level as a number, a probability for each level, `confidence` |
+| `noul` | only `instructions`: a yes/no question | `noul`: the probability that the answer is yes |
+
+- `state` can be a string or any JSON value. Put there what the model should judge, and the goal or rules it should judge by.
+- `instructions` is the question. Several questions in one request are answered independently.
+- `confidence` follows the TypeSafe definitions (choice: `(p_max - 1/n) / (1 - 1/n)`): 0 at chance, 1 when certain.
+  `probabilities` are always returned, so you can apply your own threshold.
+
+## Reading twice: `--gate`
+
+`python server.py ... --gate 0.5` reads a question a second time, with the options in reverse order, whenever the top
+probability is below the threshold, and averages the two readings. It is off by default.
+
+- Turn it on for questions with many similar options (dozens or more, for example moves in a game): there the order of the
+  options matters and the second reading helps.
+- On ordinary decisions it changes nothing measurable, and it costs about a third more tokens on typical traffic.
+
+## Limits
+
+- Confidence can be off on unfamiliar domains.
+- Arithmetic, date arithmetic and multi-step computation are unreliable: compute in code and put the result in the state.
+- It answers the question it is asked from the state it is given. It has no memory between requests and takes no actions.
 
 ## Files
 
@@ -53,5 +136,7 @@ curl -s http://127.0.0.1:8080/v1/systemone -H 'Content-Type: application/json' -
 
 ## Licence
 
-Apache-2.0 (see `LICENSE`). This covers the code in this repository only. The model weights are CC BY-NC 4.0;
-commercial use of the weights: agentmessier.ai@gmail.com.
+- Code in this repository: Apache-2.0 (see `LICENSE`).
+- Model weights: [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/), free for research and evaluation. For a
+  commercial licence write to agentmessier.ai@gmail.com.
+- The weights are a fine-tuned version of `Qwen/Qwen3.5-4B` (Apache-2.0).
