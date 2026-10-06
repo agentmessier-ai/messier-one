@@ -110,14 +110,37 @@ What the released model answers:
 - `confidence` follows the TypeSafe definitions (choice: `(p_max - 1/n) / (1 - 1/n)`): 0 at chance, 1 when certain.
   `probabilities` are always returned, so you can apply your own threshold.
 
-## Reading twice: `--gate`
+## Option order, and reading twice (`--gate`)
 
-`python server.py ... --gate 0.5` reads a question a second time, with the options in reverse order, whenever the top
-probability is below the threshold, and averages the two readings. It is off by default.
+**The problem.** The model reads the probability of each option's label (A, B, C, ...). It has a slight preference for some
+positions, so the order in which you list the options can change the answer. On most questions it does not. It does when the
+model is torn between two options, and when there are many options that look alike. Asking 300 questions once as written and
+once with the options reversed, the answer changed on 6% of them.
 
-- Turn it on for questions with many similar options (dozens or more, for example moves in a game): there the order of the
-  options matters and the second reading helps.
-- On ordinary decisions it changes nothing measurable, and it costs about a third more tokens on typical traffic.
+**What does not pay.** Reading every question in several orders and averaging: four orders cost four times as much, helped
+only on questions with many similar options, and changed nothing on ordinary decisions, where the model was already sure.
+
+**What we do.** `python server.py ... --gate 0.5` reads a question once. Only if its top probability is below the threshold
+is it read a second time with the options reversed, and the two readings are averaged. Off by default.
+
+| test | single read | `--gate 0.5` |
+| --- | --- | --- |
+| 300 questions with 10-26 similar options (legal placements in a Tetris position) | 67.0% | 76.0% |
+| many-option questions, 101-255 options | 89.4% | 92.9% |
+| many-option questions, all sizes | 95.6% | 95.8% |
+| answers that change when the options are reversed | 6% | 5% |
+| JevBench public items | 85.3% | 85.3% |
+
+The last row is the released model. The other rows were measured during development on the checkpoint just before it (same
+architecture, same readout); we expect the same pattern but have not re-run them.
+
+- **Turn it on** for questions with many similar options: dozens of candidates, moves in a game, long category lists.
+- **Leave it off** for ordinary decisions. It changes nothing there and costs tokens.
+- **Cost.** About a third more tokens on typical traffic. A question that is read twice takes twice as long; on the Tetris
+  questions above about half were.
+- The threshold is compared with the top probability, not with the `confidence` field.
+- Without `--gate` you can do the same check yourself: ask the question twice with the options in a different order. If the
+  answer changes, treat it as "not sure".
 
 ## Limits
 
