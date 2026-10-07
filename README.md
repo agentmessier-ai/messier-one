@@ -14,8 +14,8 @@ every option from one forward pass. It does not generate text.
 ```
 
 ```json
-{"answers": {"route": {"type": "choice", "choice": "refund", "confidence": 0.27,
-                       "probabilities": {"refund": 0.51, "escalate": 0.46, "ignore": 0.03}}}}
+{"answers": {"route": {"type": "choice", "choice": "refund", "confidence": 0.25,
+                       "probabilities": {"refund": 0.50, "escalate": 0.46, "ignore": 0.05}}}}
 ```
 
 Your code acts when the model is sure and hands the rest to a person: here it is torn between a refund and a human agent, and
@@ -24,13 +24,13 @@ says so.
 ## What it is good at
 
 - **One forward pass, no generated text.** Every answer is a probability for each option, read at one position. On one
-  RTX 5090 a decision takes about 50 ms (short documents) to 95 ms (long ones), server on loopback.
+  RTX 4090 a decision takes about 47 ms (short documents) to 88 ms (long ones), server on loopback.
 - **Up to 255 options in one question.** Routing to one of many tools, picking a category from a long list, choosing a move
-  among many. On our own many-option test it is right 97.6% of the time with 2-26 options, 91.1% with 27-100 and 89.4% with
-  101-255.
+  among many. On our own many-option test it is right 97.4% of the time with 2-26 options, 92.0% with 27-100 and 95.3% with
+  101-255 (read with `--gate 0.5`).
 - **It reads the goal you give it.** The same document judged under a different goal gets a different answer. On our own
   held-out test (166 project descriptions, the same yes/no question under the original goal, the opposite goal and a goal
-  never seen in training) it agrees with the reference answers 86-90% of the time under all three.
+  never seen in training) it agrees with the reference answers 84-89% of the time under all three.
 - **Probabilities you can use as they are.** They come from the model's own distribution with one fitted temperature per
   question type. Nothing is pushed toward 0 or 1 afterwards.
 - **A drop-in endpoint.** The TypeSafe wire format: `choice`, `score` and `noul` questions, several per request.
@@ -42,14 +42,14 @@ models, not by people.
 ## Results
 
 Public JevBench items (231), measured by us with JevBench's own runner and its unchanged `typesafe` adapter: serial requests,
-single read, this server on one RTX 5090 (vLLM 0.30.0, BF16), loopback.
+single read, this server on one RTX 4090 (vLLM 0.30.0, BF16), loopback. Model revision v0.2.
 
 | tier | correct | accuracy | ECE | latency p50 / p95 |
 | --- | --- | --- | --- | --- |
-| easy | 48 / 48 | 100.0% | 0.003 | 46 ms / 52 ms |
-| standard + judge (`original`) | 72 / 72 | 100.0% | 0.059 | 51 ms / 57 ms |
-| hard | 77 / 111 | 69.4% | 0.092 | 95 ms / 171 ms |
-| all | 197 / 231 | 85.3% | | |
+| easy | 48 / 48 | 100.0% | 0.002 | 47 ms / 51 ms |
+| standard + judge (`original`) | 72 / 72 | 100.0% | 0.046 | 47 ms / 49 ms |
+| hard | 82 / 111 | 73.9% | 0.119 | 88 ms / 221 ms |
+| all | 202 / 231 | 87.4% | | |
 
 These are our own measurements on the public items, not leaderboard results. Part of the training material was written for
 this model in the families of JevBench's hard tier; no JevBench item, public or held out, was used for training, and every
@@ -60,7 +60,7 @@ training question was scanned against the public items before use.
 ```bash
 git clone https://github.com/agentmessier-ai/messier-one && cd messier-one
 pip install -r requirements.txt   # vllm 0.30.0, transformers 5.18.0: the versions this was tested with
-hf download agentmessier/messier-one --revision v0.1 --local-dir MODEL_DIR
+hf download agentmessier/messier-one --revision v0.2 --local-dir MODEL_DIR
 
 # 1) the model (loopback only)
 VLLM_USE_FLASHINFER_SAMPLER=0 vllm serve MODEL_DIR --served-model-name m --port 8000 \
@@ -90,11 +90,11 @@ What the released model answers:
 
 ```json
 {"answers": {
-  "route":  {"type": "choice", "choice": "refund", "confidence": 0.27,
-             "probabilities": {"refund": 0.51, "escalate": 0.46, "ignore": 0.03}},
-  "urgent": {"type": "noul", "noul": 0.11},
-  "anger":  {"type": "score", "score": 0.59, "confidence": 0.41,
-             "probabilities": {"0": 0.55, "1": 0.31, "2": 0.14}}}}
+  "route":  {"type": "choice", "choice": "refund", "confidence": 0.25,
+             "probabilities": {"refund": 0.50, "escalate": 0.46, "ignore": 0.05}},
+  "urgent": {"type": "noul", "noul": 0.12},
+  "anger":  {"type": "score", "score": 0.79, "confidence": 0.14,
+             "probabilities": {"0": 0.39, "1": 0.42, "2": 0.18}}}}
 ```
 
 ## The three question types
@@ -128,8 +128,8 @@ is it read a second time with the options reversed, and the two readings are ave
 | 300 questions with 10-26 similar options (legal placements in a Tetris position) | 67.0% | 76.0% |
 | many-option questions, 101-255 options | 89.4% | 92.9% |
 
-Measured during development on the checkpoint just before the released one (same architecture, same readout). On ordinary
-decisions the second reading changes nothing: the released model scores 85.3% on the public JevBench items with it and without.
+Measured during development on an earlier checkpoint (same architecture, same readout). On ordinary decisions the second
+reading changes little: the released model scores 87.4% on the public JevBench items without it and 87.9% with it.
 
 - **Turn it on** for questions with many similar options: dozens of candidates, moves in a game, long category lists.
 - **Leave it off** for ordinary decisions. It changes nothing there and costs tokens.
