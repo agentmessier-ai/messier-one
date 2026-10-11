@@ -22,6 +22,9 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--model-dir", required=True); ap.add_argument("--vllm", default="http://127.0.0.1:8000"); ap.add_argument("--served", default="m")
 ap.add_argument("--port", type=int, default=8080); ap.add_argument("--host", default="127.0.0.1"); ap.add_argument("--gate", type=float, default=0.0)
 ap.add_argument("--max-state", type=int, default=8000); ap.add_argument("--max-total", type=int, default=8600)
+# A yes/no answer commits: a probability closer to 0.5 than the floor moves to the floor on its own side (0.62 -> 0.801, 0.30 -> 0.199).
+# The decision never changes. 0 turns it off and returns the model's own probability.
+ap.add_argument("--noul-floor", type=float, default=0.801)
 A = ap.parse_args()
 P = Prompter(AutoTokenizer.from_pretrained(A.model_dir), A.max_state, A.max_total)
 TEMPS = {}
@@ -86,6 +89,12 @@ def decide(state, questions):
     return {qid: average(v) for qid, v in out.items()}
 
 
+def commit(answers, floor=None):
+    f = A.noul_floor if floor is None else floor
+    return {k: dict(r, noul=f if r["noul"] >= 0.5 else 1 - f) if f and r.get("type") == "noul" and max(r["noul"], 1 - r["noul"]) < f else r
+            for k, r in answers.items()}
+
+
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         self._send(200 if self.path == "/health" else 404, {"status": "ok"} if self.path == "/health" else {"error": "not found"})
@@ -101,7 +110,7 @@ class H(BaseHTTPRequestHandler):
         except (ValueError, KeyError, TypeError) as e:
             return self._send(400, {"error": str(e)[:300]})
         try:
-            answers = decide(state, body["questions"])
+            answers = commit(decide(state, body["questions"]))
         except (ValueError, KeyError, TypeError) as e:   # a malformed question
             return self._send(400, {"error": str(e)[:300]})
         except Exception as e:
