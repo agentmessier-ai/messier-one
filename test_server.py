@@ -75,5 +75,17 @@ class Decide(unittest.TestCase):
             s.decide("x", {"q": {"type": "choice", "criteria": {f"k{i}": None for i in range(27)}}})
 
 
+class Commit(unittest.TestCase):
+    def test_a_yes_no_answer_inside_the_floor_moves_to_it_on_its_own_side_and_nothing_else_changes(self):
+        s = load_server()
+        self.assertEqual(s.A.noul_floor, 0.801)
+        a = {"a": {"type": "noul", "noul": 0.62}, "b": {"type": "noul", "noul": 0.30}, "c": {"type": "noul", "noul": 0.95}, "d": {"type": "noul", "noul": 0.5},
+             "e": {"type": "choice", "choice": "x", "probabilities": {"x": 0.6, "y": 0.4}}}
+        out = s.commit(a)
+        self.assertEqual([out[k]["noul"] for k in "abcd"], [0.801, 1 - 0.801, 0.95, 0.801])
+        self.assertEqual(out["e"], a["e"])
+        self.assertEqual(s.commit(a, floor=0.0), a)
+
+
 if __name__ == "__main__":
     unittest.main()

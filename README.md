@@ -24,15 +24,15 @@ says so.
 ## What it is good at
 
 - **One forward pass, no generated text.** Every answer is a probability for each option, read at one position. On one
-  RTX 4090 a decision takes about 47 ms (short documents) to 88 ms (long ones), server on loopback.
+  RTX 3090 a decision takes about 54 ms (short documents) to 149 ms (long ones), server on loopback.
 - **Up to 255 options in one question.** Routing to one of many tools, picking a category from a long list, choosing a move
-  among many. On our own many-option test it is right 97.4% of the time with 2-26 options, 92.0% with 27-100 and 95.3% with
+  among many. On our own many-option test it is right 97.5% of the time with 2-26 options, 91.5% with 27-100 and 90.6% with
   101-255 (read with `--gate 0.5`).
 - **It reads the goal you give it.** The same document judged under a different goal gets a different answer. On our own
   held-out test (166 project descriptions, the same yes/no question under the original goal, the opposite goal and a goal
-  never seen in training) it agrees with the reference answers 84-89% of the time under all three.
-- **Probabilities you can use as they are.** They come from the model's own distribution with one fitted temperature per
-  question type. Nothing is pushed toward 0 or 1 afterwards.
+  never seen in training) it agrees with the reference answers 86-89% of the time under all three.
+- **Calibrated probabilities.** They come from the model's own distribution with one fitted temperature per question
+  type. `choice` and `score` answers are returned as they are. A yes/no answer commits: see "Yes/no answers" below.
 - **A drop-in endpoint.** The TypeSafe wire format: `choice`, `score` and `noul` questions, several per request.
 - **Small.** One 24 GB GPU is enough.
 
@@ -42,14 +42,14 @@ models, not by people.
 ## Results
 
 Public JevBench items (231), measured by us with JevBench's own runner and its unchanged `typesafe` adapter: serial requests,
-single read, this server on one RTX 4090 (vLLM 0.30.0, BF16), loopback. Model revision v0.2.
+single read, this server with its defaults on one RTX 3090 (vLLM 0.30.0, BF16), loopback. Model revision v0.3.
 
 | tier | correct | accuracy | ECE | latency p50 / p95 |
 | --- | --- | --- | --- | --- |
-| easy | 48 / 48 | 100.0% | 0.002 | 47 ms / 51 ms |
-| standard + judge (`original`) | 72 / 72 | 100.0% | 0.046 | 47 ms / 49 ms |
-| hard | 82 / 111 | 73.9% | 0.119 | 88 ms / 221 ms |
-| all | 202 / 231 | 87.4% | | |
+| easy | 48 / 48 | 100.0% | 0.001 | 81 ms / 86 ms |
+| standard + judge (`original`) | 71 / 72 | 98.6% | 0.030 | 54 ms / 65 ms |
+| hard | 87 / 111 | 78.4% | 0.087 | 149 ms / 505 ms |
+| all | 206 / 231 | 89.2% | | |
 
 These are our own measurements on the public items, not leaderboard results. Part of the training material was written for
 this model in the families of JevBench's hard tier; no JevBench item, public or held out, was used for training, and every
@@ -60,7 +60,7 @@ training question was scanned against the public items before use.
 ```bash
 git clone https://github.com/agentmessier-ai/messier-one && cd messier-one
 pip install -r requirements.txt   # vllm 0.30.0, transformers 5.18.0: the versions this was tested with
-hf download agentmessier/messier-one --revision v0.2 --local-dir MODEL_DIR
+hf download agentmessier/messier-one --revision v0.3 --local-dir MODEL_DIR
 
 # 1) the model (loopback only)
 VLLM_USE_FLASHINFER_SAMPLER=0 vllm serve MODEL_DIR --served-model-name m --port 8000 \
@@ -90,11 +90,11 @@ What the released model answers:
 
 ```json
 {"answers": {
-  "route":  {"type": "choice", "choice": "refund", "confidence": 0.25,
-             "probabilities": {"refund": 0.50, "escalate": 0.46, "ignore": 0.05}},
-  "urgent": {"type": "noul", "noul": 0.12},
-  "anger":  {"type": "score", "score": 0.79, "confidence": 0.14,
-             "probabilities": {"0": 0.39, "1": 0.42, "2": 0.18}}}}
+  "route":  {"type": "choice", "choice": "refund", "confidence": 0.92,
+             "probabilities": {"refund": 0.95, "escalate": 0.05, "ignore": 0.01}},
+  "urgent": {"type": "noul", "noul": 0.01},
+  "anger":  {"type": "score", "score": 0.18, "confidence": 0.82,
+             "probabilities": {"0": 0.83, "1": 0.16, "2": 0.01}}}}
 ```
 
 ## The three question types
@@ -103,12 +103,23 @@ What the released model answers:
 | --- | --- | --- |
 | `choice` | `criteria`: option name -> description (or `null`: the name is then the description), or a list of names. 2 to 255 options | the likeliest option, a probability for each, `confidence` |
 | `score` | `criteria`: the ordered list of levels, lowest first | the expected level as a number, a probability for each level, `confidence` |
-| `noul` | only `instructions`: a yes/no question | `noul`: the probability that the answer is yes |
+| `noul` | only `instructions`: a yes/no question | `noul`: the probability that the answer is yes, committed by default (see "Yes/no answers") |
 
 - `state` can be a string or any JSON value. Put there what the model should judge, and the goal or rules it should judge by.
 - `instructions` is the question. Several questions in one request are answered independently.
 - `confidence` follows the TypeSafe definitions (choice: `(p_max - 1/n) / (1 - 1/n)`): 0 at chance, 1 when certain.
   `probabilities` are always returned, so you can apply your own threshold.
+
+## Yes/no answers (`--noul-floor`)
+
+A `noul` answer is a probability that the answer is yes. By default the server commits it: a probability closer to 0.5 than
+the floor moves to the floor on its own side, so 0.62 is returned as 0.801 and 0.30 as 0.199. Answers already outside
+stay as they are, and the decision (yes or no) never changes. The model weights are not involved; it is a step in `server.py`.
+
+- **Why.** A caller, or a benchmark, that reads anything between 0.2 and 0.8 as "no answer" would otherwise throw away
+  decisions the model did make. JevBench scores yes/no answers this way.
+- **Turn it off** with `--noul-floor 0` when you want the model's own probability, for example to rank items by it or to set
+  your own threshold. `choice` and `score` answers are never changed.
 
 ## Option order, and reading twice (`--gate`)
 
@@ -129,7 +140,7 @@ is it read a second time with the options reversed, and the two readings are ave
 | many-option questions, 101-255 options | 89.4% | 92.9% |
 
 Measured during development on an earlier checkpoint (same architecture, same readout). On ordinary decisions the second
-reading changes little: the released model scores 87.4% on the public JevBench items without it and 87.9% with it.
+reading changes little: the released model scores 89.2% on the public JevBench items without it and 90.0% with it.
 
 - **Turn it on** for questions with many similar options: dozens of candidates, moves in a game, long category lists.
 - **Leave it off** for ordinary decisions. It changes nothing there and costs tokens.
