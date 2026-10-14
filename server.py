@@ -1,14 +1,15 @@
 """TypeSafe-compatible front end (POST /v1/systemone) for the decision model served by vLLM.
 
-    vllm serve MODEL_DIR --served-model-name m --port 8000 --max-model-len 10240 --max-num-seqs 32 --max-logprobs 256 \\
-        --logprobs-mode processed_logprobs --enable-prefix-caching
-    python server.py --model-dir MODEL_DIR --vllm http://127.0.0.1:8000 --served m --port 8080
+    ./serve_vllm.sh MODEL_DIR 8080            (vLLM with the settings the model directory needs, then this front end)
+or without vLLM, in this process:
+    python server.py --model-dir MODEL_DIR --engine transformers --port 8080
 
 One request = one state and any number of typed questions (choice / score / noul). All questions go to vLLM in one batched
-call; vLLM computes one token restricted to the option labels and returns their log-probabilities. Probabilities are
+call (or through the local transformers engine); one token restricted to the option labels is computed and their
+log-probabilities returned. Probabilities are
 softmax(logprob / T) over the shown options, T per question type from temps.json in the model directory.
---gate G (optional): a question whose top probability is below G is read once more with the options in reverse order and
-the two readings are averaged.
+--gate G (default 0.5; 0 turns it off): a question whose top probability is below G is read once more with the options in
+reverse order and the two readings are averaged.
 """
 import argparse, json, math, os, time, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,17 +21,34 @@ from prompt import Prompter, logprob_key, semantic
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--model-dir", required=True); ap.add_argument("--vllm", default="http://127.0.0.1:8000"); ap.add_argument("--served", default="m")
-ap.add_argument("--port", type=int, default=8080); ap.add_argument("--host", default="127.0.0.1"); ap.add_argument("--gate", type=float, default=0.0)
+ap.add_argument("--port", type=int, default=8080); ap.add_argument("--host", default="127.0.0.1"); ap.add_argument("--gate", type=float, default=0.5)
 ap.add_argument("--max-state", type=int, default=8000); ap.add_argument("--max-total", type=int, default=8600)
 # A yes/no answer commits: a probability closer to 0.5 than the floor moves to the floor on its own side (0.62 -> 0.801, 0.30 -> 0.199).
 # The decision never changes. 0 turns it off and returns the model's own probability.
 ap.add_argument("--noul-floor", type=float, default=0.801)
+ap.add_argument("--engine", choices=["vllm", "transformers"], default="vllm")
+ap.add_argument("--noncausal", choices=["auto", "on", "off"], default="auto")   # auto: what sys1_merge.json in the model directory says
+ap.add_argument("--batch", type=int, default=4); ap.add_argument("--device", default="cuda")   # transformers engine only
 A = ap.parse_args()
-P = Prompter(AutoTokenizer.from_pretrained(A.model_dir), A.max_state, A.max_total)
+MERGE = {}
+if os.path.exists(os.path.join(A.model_dir, "sys1_merge.json")):
+    with open(os.path.join(A.model_dir, "sys1_merge.json")) as f:
+        MERGE = json.load(f)
+NONCAUSAL = A.noncausal == "on" or (A.noncausal == "auto" and bool(MERGE.get("noncausal")))
+with open(os.path.join(A.model_dir, "config.json")) as f:
+    CFG = json.load(f)
+if NONCAUSAL and A.engine == "vllm" and (CFG.get("text_config") or CFG).get("is_causal", True):
+    ap.error("this model directory needs the config.json it was released with and vLLM started by serve_vllm.sh; "
+             "or use --engine transformers")
+P = Prompter(AutoTokenizer.from_pretrained(A.model_dir), A.max_state, A.max_total, MERGE.get("labels", ""), MERGE.get("layout", ""))
 TEMPS = {}
 if os.path.exists(os.path.join(A.model_dir, "temps.json")):
     with open(os.path.join(A.model_dir, "temps.json")) as f:
         TEMPS = json.load(f)
+LOCAL = None
+if A.engine == "transformers":
+    from local import Local
+    LOCAL = Local(A.model_dir, P.label_ids, NONCAUSAL, A.batch, A.device)
 
 
 def convert(q):
@@ -45,16 +63,25 @@ def convert(q):
     return "score", [str(i) for i in range(len(levels))], [semantic(v, "level") for v in levels]
 
 
-def read(items):
-    """One /v1/completions call for (type, names, prompt ids, order) items -> their answers, in order."""
-    k = max(len(it[1]) for it in items)
-    if k > len(P.label_ids):
-        raise ValueError(f"{k} options, this checkpoint reads at most {len(P.label_ids)}")
-    body = {"model": A.served, "prompt": [it[2] for it in items], "max_tokens": 1, "temperature": 1.0, "top_k": -1, "top_p": 1.0, "min_p": 0.0,
+def vllm_logprobs(prompts, k):
+    body = {"model": A.served, "prompt": prompts, "max_tokens": 1, "temperature": 1.0, "top_k": -1, "top_p": 1.0, "min_p": 0.0,
             "seed": 0, "logprobs": k, "allowed_token_ids": P.label_ids[:k]}   # sampling filters off: they would zero all but the top label
     req = urllib.request.Request(A.vllm + "/v1/completions", json.dumps(body).encode(), {"content-type": "application/json"})
     choices = sorted(json.loads(urllib.request.urlopen(req, timeout=300).read())["choices"], key=lambda c: c["index"])
-    return [finish(typ, names, c["logprobs"]["top_logprobs"][0], order) for (typ, names, _, order), c in zip(items, choices)]
+    return [c["logprobs"]["top_logprobs"][0] for c in choices]
+
+
+def local_logprobs(prompts, k):
+    return [{logprob_key(j): v for j, v in enumerate(lp)} for lp in LOCAL.logprobs(prompts, k)]
+
+
+def read(items):
+    """One engine call for (type, names, prompt ids, order) items -> their answers, in order."""
+    k = max(len(it[1]) for it in items)
+    if k > len(P.label_ids):
+        raise ValueError(f"{k} options, this checkpoint reads at most {len(P.label_ids)}")
+    lps = local_logprobs([it[2] for it in items], k) if LOCAL else vllm_logprobs([it[2] for it in items], k)
+    return [finish(typ, names, lp, order) for (typ, names, _, order), lp in zip(items, lps)]
 
 
 def finish(typ, names, logprobs, order):
@@ -131,5 +158,6 @@ class Server(ThreadingHTTPServer):
 
 
 if __name__ == "__main__":
-    print(f"front end on {A.host}:{A.port} -> {A.vllm} ({A.served}); temperatures {TEMPS}; up to {len(P.label_ids)} options", flush=True)
+    target = "transformers" if LOCAL else f"{A.vllm} ({A.served})"
+    print(f"front end on {A.host}:{A.port} -> {target}; temperatures {TEMPS}; up to {len(P.label_ids)} options", flush=True)
     Server((A.host, A.port), H).serve_forever()

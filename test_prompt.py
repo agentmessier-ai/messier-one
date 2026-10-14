@@ -57,6 +57,19 @@ class Prompt(unittest.TestCase):
         text = tok.text(p("a" * 50 + "b" * 50, "boolean", "q", ["true", "false"], ["TRUE", "FALSE"]))
         self.assertIn("a" * 10 + "\n...[truncated]...\n" + "b" * 10, text); self.assertNotIn("a" * 11, text)
 
+    def test_the_prompt_of_a_qboth_checkpoint(self):
+        tok = CharTok(); p = Prompter(tok, layout="qboth")
+        ids = p("order 8841, headphones dead", "choice", "What now?", ["refund", "escalate"], ["refund the order", "send to a human"])
+        qo = "QUESTION (choice): What now?\n\nOPTIONS:\nA. refund: refund the order\nB. escalate: send to a human"
+        self.assertEqual(tok.text(ids), "<|im_start|>user\nRead the question, then the state, and answer by choosing exactly one option.\n\n"
+                         + qo + "\n\nSTATE:\norder 8841, headphones dead\n\n" + qo + "\n\n"
+                         "Reply with the letter only.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\nAnswer:")
+
+    def test_a_long_qboth_prompt_is_shortened_in_the_state(self):
+        tok = CharTok(); p = Prompter(tok, max_state=5000, max_total=400, layout="qboth")
+        ids = p("x" * 1000, "boolean", "Is it?", ["true", "false"], ["TRUE", "FALSE"]); text = tok.text(ids)
+        self.assertLessEqual(len(ids), 400); self.assertEqual(text.count("Is it?"), 2); self.assertIn("\n...[truncated]...\n", text)
+
     def test_the_whole_prompt_is_cut_from_the_front_so_the_question_survives(self):
         tok = CharTok(); p = Prompter(tok, max_state=5000, max_total=300)
         ids = p("x" * 1000, "boolean", "Is it?", ["true", "false"], ["TRUE", "FALSE"])
