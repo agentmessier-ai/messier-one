@@ -39,15 +39,15 @@ The numbers above are our own measurements on our own test sets.
 ## Results
 
 Public JevBench items (231), measured by us with JevBench's own runner and its unchanged `typesafe` adapter: serial requests,
-this server started with `serve_vllm.sh` and its defaults (second reading below 0.5, see `--gate`) on one RTX 3090 (vLLM 0.30.0, BF16), loopback. Model
-revision v0.4.
+this server started with `serve_vllm.sh` and its defaults (second reading below 0.5, see `--gate`) on one RTX 5090 (vLLM 0.30.0, BF16), loopback. Model
+revision v0.4.1 (the weights of v0.4 with changed temperatures; v0.4 measured 206 / 231 on the same card).
 
 | tier | correct | accuracy | ECE | latency p50 / p95 |
 | --- | --- | --- | --- | --- |
-| easy | 48 / 48 | 100.0% | 0.005 | 79 ms / 86 ms |
-| standard + judge (`original`) | 72 / 72 | 100.0% | 0.025 | 81 ms / 95 ms |
-| hard | 87 / 111 | 78.4% | 0.148 | 145 ms / 507 ms |
-| all | 207 / 231 | 89.6% | | |
+| easy | 48 / 48 | 100.0% | 0.034 | 39 ms / 41 ms |
+| standard + judge (`original`) | 72 / 72 | 100.0% | 0.075 | 38 ms / 40 ms |
+| hard | 85 / 111 | 76.6% | 0.085 | 46 ms / 164 ms |
+| all | 205 / 231 | 88.7% | | |
 
 These are our own measurements on the public items, not leaderboard results. Part of the training material was written for
 this model in the families of JevBench's hard tier; no JevBench item, public or held out, was used for training, and every
@@ -58,7 +58,7 @@ training question was scanned against the public items before use.
 ```bash
 git clone https://github.com/agentmessier-ai/messier-one && cd messier-one
 pip install -r requirements.txt   # vllm 0.30.0, transformers 5.18.0: the versions this was tested with
-hf download agentmessier/messier-one --revision v0.4 --local-dir MODEL_DIR
+hf download agentmessier/messier-one --revision v0.4.1 --local-dir MODEL_DIR
 
 # vLLM on 127.0.0.1:8000 (loopback only) and the /v1/systemone front end on port 8080
 ./serve_vllm.sh MODEL_DIR 8080
