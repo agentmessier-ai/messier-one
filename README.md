@@ -14,22 +14,22 @@ every option from one forward pass. It does not generate text.
 ```
 
 ```json
-{"answers": {"route": {"type": "choice", "choice": "refund", "confidence": 0.38,
-                       "probabilities": {"refund": 0.58, "escalate": 0.37, "ignore": 0.05}}}}
+{"answers": {"route": {"type": "choice", "choice": "escalate", "confidence": 0.29,
+                       "probabilities": {"refund": 0.44, "escalate": 0.52, "ignore": 0.04}}}}
 ```
 
-Your code acts when the model is sure and hands the rest to a person: here it is torn between a refund and a human agent, and
+Your code acts when the model is sure and hands the rest to a person: here it is torn between a human agent and a refund, and
 says so.
 
 ## What it is good at
 
 - **One forward pass, no generated text.** Every answer is a probability for each option, read at one position. On one
-  RTX 3090 a decision takes about 80 ms (short documents) to 145 ms (long ones), server on loopback.
+  RTX 3090 a decision takes about 75 ms (short documents) to 255 ms (long ones), server on loopback.
 - **Up to 255 options in one question.** Routing to one of many tools, picking a category from a long list, choosing a move
-  among many. On our own many-option test it is right 97.9% of the time with 2-26 options, 93.8% with 27-100 and 92.9% with
+  among many. On our own many-option test it is right 96.7% of the time with 2-26 options, 87.3% with 27-100 and 88.2% with
   101-255 (single read).
 - **It reads the goal you give it.** The same document judged under a different goal gets a different answer. On our own
-  held-out test (166 project descriptions, the same yes/no question under three different goals) it agrees with the reference answers 90-92% of the time under all three.
+  held-out test (166 project descriptions, the same yes/no question under three different goals) it agrees with the reference answers 82-90% of the time under the three.
 - **Calibrated probabilities.** `choice` and `score` answers are returned as they are. A yes/no answer commits: see "Yes/no answers" below.
 - **A drop-in endpoint.** The TypeSafe wire format: `choice`, `score` and `noul` questions, several per request.
 - **Small.** One 24 GB GPU is enough.
@@ -40,14 +40,14 @@ The numbers above are our own measurements on our own test sets.
 
 Public JevBench items (231), measured by us with JevBench's own runner and its unchanged `typesafe` adapter: serial requests,
 this server started with `serve_vllm.sh` and its defaults (second reading below 0.5, see `--gate`) on one RTX 5090 (vLLM 0.30.0, BF16), loopback. Model
-revision v0.4.1 (the weights of v0.4 with changed temperatures; v0.4 measured 206 / 231 on the same card).
+revision v0.5 (v0.4.1 measured 205 / 231 on the same card).
 
 | tier | correct | accuracy | ECE | latency p50 / p95 |
 | --- | --- | --- | --- | --- |
-| easy | 48 / 48 | 100.0% | 0.034 | 39 ms / 41 ms |
-| standard + judge (`original`) | 72 / 72 | 100.0% | 0.075 | 38 ms / 40 ms |
-| hard | 85 / 111 | 76.6% | 0.085 | 46 ms / 164 ms |
-| all | 205 / 231 | 88.7% | | |
+| easy | 48 / 48 | 100.0% | 0.012 | 19 ms / 22 ms |
+| standard + judge (`original`) | 71 / 72 | 98.6% | 0.036 | 19 ms / 21 ms |
+| hard | 87 / 111 | 78.4% | 0.055 | 43 ms / 161 ms |
+| all | 206 / 231 | 89.2% | | |
 
 These are our own measurements on the public items, not leaderboard results. Part of the training material was written for
 this model in the families of JevBench's hard tier; no JevBench item, public or held out, was used for training, and every
@@ -58,7 +58,7 @@ training question was scanned against the public items before use.
 ```bash
 git clone https://github.com/agentmessier-ai/messier-one && cd messier-one
 pip install -r requirements.txt   # vllm 0.30.0, transformers 5.18.0: the versions this was tested with
-hf download agentmessier/messier-one --revision v0.4.1 --local-dir MODEL_DIR
+hf download agentmessier/messier-one --revision v0.5 --local-dir MODEL_DIR
 
 # vLLM on 127.0.0.1:8000 (loopback only) and the /v1/systemone front end on port 8080
 ./serve_vllm.sh MODEL_DIR 8080
@@ -97,11 +97,11 @@ What the released model answers:
 
 ```json
 {"answers": {
-  "route":  {"type": "choice", "choice": "refund", "confidence": 0.37,
-             "probabilities": {"refund": 0.58, "escalate": 0.37, "ignore": 0.05}},
-  "urgent": {"type": "noul", "noul": 0.06},
-  "anger":  {"type": "score", "score": 0.09, "confidence": 0.91,
-             "probabilities": {"0": 0.92, "1": 0.07, "2": 0.01}}}}
+  "route":  {"type": "choice", "choice": "escalate", "confidence": 0.29,
+             "probabilities": {"refund": 0.44, "escalate": 0.52, "ignore": 0.04}},
+  "urgent": {"type": "noul", "noul": 0.10},
+  "anger":  {"type": "score", "score": 0.59, "confidence": 0.38,
+             "probabilities": {"0": 0.41, "1": 0.58, "2": 0.01}}}}
 ```
 
 ## The three question types
@@ -132,7 +132,7 @@ stay as they are, and the decision (yes or no) never changes. The model weights 
 
 **The problem.** The model has a slight preference for some option positions, so the order in which you list the options can change the answer. On most questions it does not. It does when the
 model is torn between two options, and when there are many options that look alike. Asking 300 questions once as written and
-once with the options reversed, the answer changed on 6% of them.
+once with the options reversed, the answer changed on 3% of them.
 
 **What does not pay.** Reading every question in several orders and averaging: four orders cost four times as much, helped
 only on questions with many similar options, and changed nothing on ordinary decisions, where the model was already sure.
@@ -147,7 +147,7 @@ question once.
 | many-option questions, 101-255 options | 89.4% | 92.9% |
 
 Measured during development on an earlier checkpoint (same architecture). On ordinary decisions the second
-reading changes little: the released model scores 88.3% on the public JevBench items without it and 89.6% with it.
+reading changes little: the released model scores 88.7% on the public JevBench items without it and 89.6% with it (RTX 3090).
 
 - **It matters** for questions with many similar options: dozens of candidates, moves in a game, long category lists.
 - **Turn it off** (`--gate 0`) when tokens matter more than those cases: on ordinary decisions it changes little.
