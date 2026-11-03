@@ -14,22 +14,22 @@ every option from one forward pass. It does not generate text.
 ```
 
 ```json
-{"answers": {"route": {"type": "choice", "choice": "escalate", "confidence": 0.29,
-                       "probabilities": {"refund": 0.44, "escalate": 0.52, "ignore": 0.04}}}}
+{"answers": {"route": {"type": "choice", "choice": "refund", "confidence": 0.71,
+                       "probabilities": {"refund": 0.81, "escalate": 0.16, "ignore": 0.03}}}}
 ```
 
-Your code acts when the model is sure and hands the rest to a person: here it is torn between a human agent and a refund, and
-says so.
+Your code acts when the model is sure and hands the rest to a person: here it leans to a refund (0.81) and still gives a human
+agent some weight, and says so.
 
 ## What it is good at
 
 - **One forward pass, no generated text.** Every answer is a probability for each option, read at one position. On one
-  RTX 3090 a decision takes about 75 ms (short documents) to 255 ms (long ones), server on loopback.
+  RTX 3090 a decision takes about 80 ms (short documents) to 250 ms (long ones), server on loopback.
 - **Up to 255 options in one question.** Routing to one of many tools, picking a category from a long list, choosing a move
-  among many. On our own many-option test it is right 96.7% of the time with 2-26 options, 87.3% with 27-100 and 88.2% with
+  among many. On our own many-option test it is right 98.0% of the time with 2-26 options, 94.6% with 27-100 and 92.9% with
   101-255 (single read).
 - **It reads the goal you give it.** The same document judged under a different goal gets a different answer. On our own
-  held-out test (166 project descriptions, the same yes/no question under three different goals) it agrees with the reference answers 82-90% of the time under the three.
+  held-out test (166 project descriptions, the same yes/no question under three different goals) it agrees with the reference answers 90-92% of the time under all three.
 - **Calibrated probabilities.** `choice` and `score` answers are returned as they are. A yes/no answer commits: see "Yes/no answers" below.
 - **A drop-in endpoint.** The TypeSafe wire format: `choice`, `score` and `noul` questions, several per request.
 - **Small.** One 24 GB GPU is enough.
@@ -39,15 +39,15 @@ The numbers above are our own measurements on our own test sets.
 ## Results
 
 Public JevBench items (231), measured by us with JevBench's own runner and its unchanged `typesafe` adapter: serial requests,
-this server started with `serve_vllm.sh` and its defaults (second reading below 0.5, see `--gate`) on one RTX 5090 (vLLM 0.30.0, BF16), loopback. Model
-revision v0.5 (v0.4.1 measured 205 / 231 on the same card).
+this server started with `serve_vllm.sh` and its defaults (second reading below 0.5, see `--gate`) on one RTX 3090 (vLLM 0.30.0, BF16), loopback. Model
+revision v0.5.
 
 | tier | correct | accuracy | ECE | latency p50 / p95 |
 | --- | --- | --- | --- | --- |
-| easy | 48 / 48 | 100.0% | 0.012 | 19 ms / 22 ms |
-| standard + judge (`original`) | 71 / 72 | 98.6% | 0.036 | 19 ms / 21 ms |
-| hard | 87 / 111 | 78.4% | 0.055 | 43 ms / 161 ms |
-| all | 206 / 231 | 89.2% | | |
+| easy | 48 / 48 | 100.0% | 0.004 | 69 ms / 82 ms |
+| standard + judge (`original`) | 72 / 72 | 100.0% | 0.025 | 68 ms / 82 ms |
+| hard | 90 / 111 | 81.1% | 0.106 | 91 ms / 311 ms |
+| all | 210 / 231 | 90.9% | | |
 
 These are our own measurements on the public items, not leaderboard results. Part of the training material was written for
 this model in the families of JevBench's hard tier; no JevBench item, public or held out, was used for training, and every
@@ -97,11 +97,11 @@ What the released model answers:
 
 ```json
 {"answers": {
-  "route":  {"type": "choice", "choice": "escalate", "confidence": 0.29,
-             "probabilities": {"refund": 0.44, "escalate": 0.52, "ignore": 0.04}},
-  "urgent": {"type": "noul", "noul": 0.10},
-  "anger":  {"type": "score", "score": 0.59, "confidence": 0.38,
-             "probabilities": {"0": 0.41, "1": 0.58, "2": 0.01}}}}
+  "route":  {"type": "choice", "choice": "refund", "confidence": 0.71,
+             "probabilities": {"refund": 0.81, "escalate": 0.16, "ignore": 0.03}},
+  "urgent": {"type": "noul", "noul": 0.08},
+  "anger":  {"type": "score", "score": 0.05, "confidence": 0.95,
+             "probabilities": {"0": 0.95, "1": 0.04, "2": 0.01}}}}
 ```
 
 ## The three question types
@@ -147,7 +147,7 @@ question once.
 | many-option questions, 101-255 options | 89.4% | 92.9% |
 
 Measured during development on an earlier checkpoint (same architecture). On ordinary decisions the second
-reading changes little: the released model scores 88.7% on the public JevBench items without it and 89.6% with it (RTX 3090).
+reading changes little: the released model scores 90.9% on the public JevBench items without it and 90.9% with it (RTX 3090).
 
 - **It matters** for questions with many similar options: dozens of candidates, moves in a game, long category lists.
 - **Turn it off** (`--gate 0`) when tokens matter more than those cases: on ordinary decisions it changes little.
